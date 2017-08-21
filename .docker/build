@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+apt-get update -q
+apt-get install -qqy dante-server libpam-radius-auth
+apt-get clean
+rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*

@@ -1,0 +1,3 @@
+RADIUS_SERVER = light-freeradius
+RADIUS_SECRET = testing123
+
