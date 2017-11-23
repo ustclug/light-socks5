@@ -1,2 +1,2 @@
-auth sufficient /usr/lib/security/pam_radius_auth.so
-account sufficient /usr/lib/security/pam_radius_auth.so
+auth sufficient /lib/security/pam_radius_auth.so
+account sufficient /lib/security/pam_radius_auth.so
