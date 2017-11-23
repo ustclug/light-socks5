@@ -1,3 +1,6 @@
 RADIUS_SERVER = light-freeradius
 RADIUS_SECRET = testing123
+INTER_PORT    = 6626
+INTER_INTERFACE = eth0
+EXTER_INTERFACE = eth0
 
