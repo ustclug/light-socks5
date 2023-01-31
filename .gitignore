@@ -1,0 +1,8 @@
+ganted
+
+build/
+.idea/
+
+*.swp
+*.[oa]
+*~
