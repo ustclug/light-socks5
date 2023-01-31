@@ -3,10 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"io"
 	"log"
-	"net"
 	"os"
 
 	"github.com/armon/go-socks5"
@@ -62,6 +60,13 @@ func (r *RadiusCredentials) Valid(username, password string) bool {
 	return response.Code == radius.CodeAccessAccept
 }
 
+func getEnv(key, def string) string {
+	if v, ok := os.LookupEnv(key); ok {
+		return v
+	}
+	return def
+}
+
 var (
 	ListenAddr   string
 	RadiusAddr   string
@@ -75,19 +80,13 @@ func init() {
 	if _, ok := os.LookupEnv("JOURNAL_STREAM"); ok {
 		log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
 	}
-
-	ServerACL.Add(&net.IPNet{IP: net.ParseIP("192.0.2.0"), Mask: net.CIDRMask(24, 32)})
-	ServerACL.Add(&net.IPNet{IP: net.ParseIP("198.51.100.0"), Mask: net.CIDRMask(24, 32)})
-	ServerACL.Add(&net.IPNet{IP: net.ParseIP("203.0.113.0"), Mask: net.CIDRMask(24, 32)})
-	ServerACL.Add(&net.IPNet{IP: net.ParseIP("2001:db8::"), Mask: net.CIDRMask(32, 128)})
 }
 
 func main() {
-	flag.StringVar(&ListenAddr, "l", "127.0.0.1:1080", "listen address")
-	flag.StringVar(&RadiusAddr, "r", "127.0.0.1:1812", "RADIUS server address")
-	flag.StringVar(&RadiusSecret, "s", "", "RADIUS secret")
-	flag.Var(&ServerACL, "a", "allowed IP addresses")
-	flag.Parse()
+	ListenAddr = getEnv("GANTED_LISTEN", "127.0.0.1:6626")
+	RadiusAddr = getEnv("RADIUS_SERVER", "127.0.0.1:1812")
+	RadiusSecret = getEnv("RADIUS_SECRET", "")
+	ServerACL.Set(getEnv("GANTED_ACL", ""))
 
 	server, err := socks5.New(&socks5.Config{
 		Credentials: &RadiusCredentials{
