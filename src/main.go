@@ -54,7 +54,7 @@ func (r *RadiusCredentials) Valid(username, password string) bool {
 	rfc2865.UserPassword_SetString(packet, password)
 	response, err := radius.Exchange(context.Background(), packet, r.Server)
 	if err != nil {
-		log.Printf("Radius error: %s\n", err)
+		log.Printf("[ERR] Radius error: %s\n", err)
 		return false
 	}
 	return response.Code == radius.CodeAccessAccept
@@ -67,13 +67,6 @@ func getEnv(key, def string) string {
 	return def
 }
 
-var (
-	ListenAddr   string
-	RadiusAddr   string
-	RadiusSecret string
-	ServerACL    = ACL{BasicNet: netallow.NewBasicNet()}
-)
-
 func init() {
 	log.SetFlags(log.Flags() | log.Lshortfile)
 	// Don't repeat timestamp if logging to systemd journal (v231+)
@@ -83,23 +76,24 @@ func init() {
 }
 
 func main() {
-	ListenAddr = getEnv("GANTED_LISTEN", "127.0.0.1:6626")
-	RadiusAddr = getEnv("RADIUS_SERVER", "127.0.0.1:1812")
-	RadiusSecret = getEnv("RADIUS_SECRET", "")
-	ServerACL.Set(getEnv("GANTED_ACL", ""))
+	listenAddr := getEnv("GANTED_LISTEN", "127.0.0.1:6626")
+	radiusAddr := getEnv("RADIUS_SERVER", "127.0.0.1:1812")
+	radiusSecret := getEnv("RADIUS_SECRET", "")
+	serverACL := &ACL{BasicNet: netallow.NewBasicNet()}
+	serverACL.Set(getEnv("GANTED_ACL", ""))
 
 	server, err := socks5.New(&socks5.Config{
 		Credentials: &RadiusCredentials{
-			Server: RadiusAddr,
-			Secret: []byte(RadiusSecret),
+			Server: radiusAddr,
+			Secret: []byte(radiusSecret),
 		},
-		Rules:  &ServerACL,
+		Rules:  serverACL,
 		Logger: log.Default(),
 	})
 	if err != nil {
-		log.Fatalf("Error creating socks5 server: %s", err)
+		log.Fatalf("[ERR] Create socks5 server: %s", err)
 	}
-	if err := server.ListenAndServe("tcp", ListenAddr); err != nil {
-		log.Fatalf("Error starting socks5 server: %s", err)
+	if err := server.ListenAndServe("tcp", listenAddr); err != nil {
+		log.Fatalf("[ERR] Start socks5 server: %s", err)
 	}
 }
