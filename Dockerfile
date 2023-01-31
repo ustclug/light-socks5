@@ -4,5 +4,7 @@ COPY src/ .
 RUN CGO_ENABLED=0 make
 
 FROM alpine:latest
+WORKDIR /app
 COPY --from=builder /usr/src/app/ganted ./
-CMD ["./ganted"]
+COPY start.sh ./
+CMD ["/app/start.sh"]
