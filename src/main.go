@@ -24,7 +24,11 @@ func (acl *ACL) Allow(ctx context.Context, request *socks5.Request) (context.Con
 	if request.Command != socks5.ConnectCommand {
 		return ctx, false
 	}
-	return ctx, acl.Permitted(request.DestAddr.IP)
+	if !acl.Permitted(request.DestAddr.IP) {
+		return ctx, false
+	}
+	log.Printf("Accept: %q, %s, %s", request.AuthContext.Payload["Username"], request.RemoteAddr, request.DestAddr)
+	return ctx, true
 }
 
 // ACL.String and ACL.Set implement the flag.Value interface.
