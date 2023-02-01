@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"net"
 	"os"
 
 	"github.com/armon/go-socks5"
@@ -82,6 +83,12 @@ func main() {
 	serverACL := &ACL{BasicNet: netallow.NewBasicNet()}
 	serverACL.Set(getEnv("GANTED_ACL", ""))
 
+	dialer := &net.Dialer{}
+	bindAddr := getEnv("GANTED_BIND_OUTPUT", "")
+	if bindAddr != "" {
+		dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(bindAddr)}
+	}
+
 	server, err := socks5.New(&socks5.Config{
 		Credentials: &RadiusCredentials{
 			Server: radiusAddr,
@@ -89,6 +96,7 @@ func main() {
 		},
 		Rules:  serverACL,
 		Logger: log.Default(),
+		Dial:   dialer.DialContext,
 	})
 	if err != nil {
 		log.Fatalf("[ERR] Create socks5 server: %s", err)
