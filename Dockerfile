@@ -1,7 +1,7 @@
-FROM golang:1.19 AS builder
+FROM golang:1-alpine AS builder
 WORKDIR /usr/src/app
 COPY src/ .
-RUN CGO_ENABLED=0 make
+RUN make
 
 FROM alpine:latest
 WORKDIR /app
