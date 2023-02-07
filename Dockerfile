@@ -1,4 +1,5 @@
 FROM golang:1-alpine AS builder
+RUN apk --no-cache add make
 WORKDIR /usr/src/app
 COPY src/ .
 RUN make
