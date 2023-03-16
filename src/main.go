@@ -7,6 +7,8 @@ import (
 	"log"
 	"net"
 	"os"
+	"sync"
+	"time"
 
 	"github.com/armon/go-socks5"
 	"github.com/kisom/netallow"
@@ -46,10 +48,40 @@ func (acl *ACL) Set(s string) error {
 type RadiusCredentials struct {
 	Server string
 	Secret []byte
+	Cache  RadiusCache
+}
+
+type RadiusCache struct {
+	Retention time.Duration
+	GC        time.Duration
+	Map       sync.Map
+}
+
+type RadiusCacheItem struct {
+	Password string
+	LastUsed time.Time
+}
+
+func (c *RadiusCache) isExpired(item *RadiusCacheItem) bool {
+	return time.Since(item.LastUsed) >= c.Retention
+}
+
+func (r *RadiusCredentials) updateCache(username, password string) {
+	r.Cache.Map.Store(username, RadiusCacheItem{
+		Password: password,
+		LastUsed: time.Now(),
+	})
 }
 
 // RadiusCredentials.Valid implements the socks5.CredentialStore interface.
 func (r *RadiusCredentials) Valid(username, password string) bool {
+	if v, ok := r.Cache.Map.Load(username); ok {
+		item := v.(RadiusCacheItem)
+		if item.Password == password && !r.Cache.isExpired(&item) {
+			r.updateCache(username, password)
+			return true
+		}
+	}
 	packet := radius.New(radius.CodeAccessRequest, r.Secret)
 	rfc2865.UserName_SetString(packet, username)
 	rfc2865.UserPassword_SetString(packet, password)
@@ -58,7 +90,30 @@ func (r *RadiusCredentials) Valid(username, password string) bool {
 		log.Printf("[ERR] Radius error: %s\n", err)
 		return false
 	}
-	return response.Code == radius.CodeAccessAccept
+	if response.Code == radius.CodeAccessAccept {
+		r.updateCache(username, password)
+		return true
+	}
+	return false
+}
+
+// Clear expired cache entries at interval of GANTED_AUTH_CACHE_GC
+func (r *RadiusCredentials) gcworker() {
+	ticker := time.NewTicker(r.Cache.GC)
+	defer ticker.Stop()
+	for range ticker.C {
+		r.Cache.Map.Range(func(key, value interface{}) bool {
+			item := value.(RadiusCacheItem)
+			if r.Cache.isExpired(&item) {
+				r.Cache.Map.Delete(key)
+			}
+			return true
+		})
+	}
+}
+
+func (r *RadiusCredentials) StartGCWorker() {
+	go r.gcworker()
 }
 
 func getEnv(key, def string) string {
@@ -81,7 +136,18 @@ func main() {
 	radiusAddr := getEnv("RADIUS_SERVER", "127.0.0.1:1812")
 	radiusSecret := getEnv("RADIUS_SECRET", "")
 	serverACL := &ACL{BasicNet: netallow.NewBasicNet()}
-	serverACL.Set(getEnv("GANTED_ACL", ""))
+	err := serverACL.Set(getEnv("GANTED_ACL", ""))
+	if err != nil {
+		panic(err)
+	}
+	authCacheRetention, err := time.ParseDuration(getEnv("GANTED_AUTH_CACHE_RETENTION", "10m"))
+	if err != nil {
+		panic(err)
+	}
+	authCacheGC, err := time.ParseDuration(getEnv("GANTED_AUTH_CACHE_GC", "10m"))
+	if err != nil {
+		panic(err)
+	}
 
 	dialer := &net.Dialer{}
 	bindAddr := getEnv("GANTED_BIND_OUTPUT", "")
@@ -89,14 +155,21 @@ func main() {
 		dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(bindAddr)}
 	}
 
-	server, err := socks5.New(&socks5.Config{
-		Credentials: &RadiusCredentials{
-			Server: radiusAddr,
-			Secret: []byte(radiusSecret),
+	credentials := &RadiusCredentials{
+		Server: radiusAddr,
+		Secret: []byte(radiusSecret),
+		Cache: RadiusCache{
+			Retention: authCacheRetention,
+			GC:        authCacheGC,
 		},
-		Rules:  serverACL,
-		Logger: log.Default(),
-		Dial:   dialer.DialContext,
+	}
+	credentials.StartGCWorker()
+
+	server, err := socks5.New(&socks5.Config{
+		Credentials: credentials,
+		Rules:       serverACL,
+		Logger:      log.Default(),
+		Dial:        dialer.DialContext,
 	})
 	if err != nil {
 		log.Fatalf("[ERR] Create socks5 server: %s", err)
