@@ -67,7 +67,7 @@ func updateCache(username, password string) {
 }
 
 func isCacheExpired(item RadiusCacheItem) bool {
-	return item.LastUsed.Add(authCacheRetention).Before(time.Now())
+	return time.Since(item.LastUsed) >= authCacheRetention
 }
 
 // RadiusCredentials.Valid implements the socks5.CredentialStore interface.
