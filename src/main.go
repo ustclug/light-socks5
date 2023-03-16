@@ -7,6 +7,8 @@ import (
 	"log"
 	"net"
 	"os"
+	"sync"
+	"time"
 
 	"github.com/armon/go-socks5"
 	"github.com/kisom/netallow"
@@ -48,8 +50,22 @@ type RadiusCredentials struct {
 	Secret []byte
 }
 
+type RadiusCacheItem struct {
+	Password   string
+	ValidUntil time.Time
+}
+
+var radiusCache sync.Map
+var authCacheRetention time.Duration
+
 // RadiusCredentials.Valid implements the socks5.CredentialStore interface.
 func (r *RadiusCredentials) Valid(username, password string) bool {
+	if v, ok := radiusCache.Load(username); ok {
+		item := v.(RadiusCacheItem)
+		if item.Password == password && item.ValidUntil.After(time.Now()) {
+			return true
+		}
+	}
 	packet := radius.New(radius.CodeAccessRequest, r.Secret)
 	rfc2865.UserName_SetString(packet, username)
 	rfc2865.UserPassword_SetString(packet, password)
@@ -58,7 +74,14 @@ func (r *RadiusCredentials) Valid(username, password string) bool {
 		log.Printf("[ERR] Radius error: %s\n", err)
 		return false
 	}
-	return response.Code == radius.CodeAccessAccept
+	if response.Code == radius.CodeAccessAccept {
+		radiusCache.Store(username, RadiusCacheItem{
+			Password:   password,
+			ValidUntil: time.Now().Add(authCacheRetention),
+		})
+		return true
+	}
+	return false
 }
 
 func getEnv(key, def string) string {
@@ -81,13 +104,35 @@ func main() {
 	radiusAddr := getEnv("RADIUS_SERVER", "127.0.0.1:1812")
 	radiusSecret := getEnv("RADIUS_SECRET", "")
 	serverACL := &ACL{BasicNet: netallow.NewBasicNet()}
-	serverACL.Set(getEnv("GANTED_ACL", ""))
+	err := serverACL.Set(getEnv("GANTED_ACL", ""))
+	if err != nil {
+		panic(err)
+	}
+	authCacheRetention, err = time.ParseDuration(getEnv("GANTED_AUTH_CACHE_RETENTION", "10m"))
+	if err != nil {
+		panic(err)
+	}
 
 	dialer := &net.Dialer{}
 	bindAddr := getEnv("GANTED_BIND_OUTPUT", "")
 	if bindAddr != "" {
 		dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(bindAddr)}
 	}
+
+	// Clear expired cache entries every 10 minutes.
+	go func() {
+		for {
+			time.Sleep(10 * time.Minute)
+			currentTime := time.Now()
+			radiusCache.Range(func(key, value interface{}) bool {
+				item := value.(RadiusCacheItem)
+				if item.ValidUntil.Before(currentTime) {
+					radiusCache.Delete(key)
+				}
+				return true
+			})
+		}
+	}()
 
 	server, err := socks5.New(&socks5.Config{
 		Credentials: &RadiusCredentials{
