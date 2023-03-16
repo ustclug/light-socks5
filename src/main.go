@@ -48,6 +48,13 @@ func (acl *ACL) Set(s string) error {
 type RadiusCredentials struct {
 	Server string
 	Secret []byte
+	Cache  RadiusCache
+}
+
+type RadiusCache struct {
+	Retention time.Duration
+	GC        time.Duration
+	Map       sync.Map
 }
 
 type RadiusCacheItem struct {
@@ -55,27 +62,23 @@ type RadiusCacheItem struct {
 	LastUsed time.Time
 }
 
-var radiusCache sync.Map
-var authCacheRetention time.Duration
-var authCacheGC time.Duration
+func (c *RadiusCache) isExpired(item *RadiusCacheItem) bool {
+	return time.Since(item.LastUsed) >= c.Retention
+}
 
-func updateCache(username, password string) {
-	radiusCache.Store(username, RadiusCacheItem{
+func (r *RadiusCredentials) updateCache(username, password string) {
+	r.Cache.Map.Store(username, RadiusCacheItem{
 		Password: password,
 		LastUsed: time.Now(),
 	})
 }
 
-func isCacheExpired(item RadiusCacheItem) bool {
-	return time.Since(item.LastUsed) >= authCacheRetention
-}
-
 // RadiusCredentials.Valid implements the socks5.CredentialStore interface.
 func (r *RadiusCredentials) Valid(username, password string) bool {
-	if v, ok := radiusCache.Load(username); ok {
+	if v, ok := r.Cache.Map.Load(username); ok {
 		item := v.(RadiusCacheItem)
-		if item.Password == password && !isCacheExpired(item) {
-			updateCache(username, password)
+		if item.Password == password && !r.Cache.isExpired(&item) {
+			r.updateCache(username, password)
 			return true
 		}
 	}
@@ -88,10 +91,29 @@ func (r *RadiusCredentials) Valid(username, password string) bool {
 		return false
 	}
 	if response.Code == radius.CodeAccessAccept {
-		updateCache(username, password)
+		r.updateCache(username, password)
 		return true
 	}
 	return false
+}
+
+// Clear expired cache entries at interval of GANTED_AUTH_CACHE_GC
+func (r *RadiusCredentials) gcworker() {
+	ticker := time.NewTicker(r.Cache.GC)
+	defer ticker.Stop()
+	for range ticker.C {
+		r.Cache.Map.Range(func(key, value interface{}) bool {
+			item := value.(RadiusCacheItem)
+			if r.Cache.isExpired(&item) {
+				r.Cache.Map.Delete(key)
+			}
+			return true
+		})
+	}
+}
+
+func (r *RadiusCredentials) StartGCWorker() {
+	go r.gcworker()
 }
 
 func getEnv(key, def string) string {
@@ -109,20 +131,6 @@ func init() {
 	}
 }
 
-func cacheGC() {
-	ticker := time.NewTicker(authCacheGC)
-	defer ticker.Stop()
-	for range ticker.C {
-		radiusCache.Range(func(key, value interface{}) bool {
-			item := value.(RadiusCacheItem)
-			if isCacheExpired(item) {
-				radiusCache.Delete(key)
-			}
-			return true
-		})
-	}
-}
-
 func main() {
 	listenAddr := getEnv("GANTED_LISTEN", "127.0.0.1:6626")
 	radiusAddr := getEnv("RADIUS_SERVER", "127.0.0.1:1812")
@@ -132,11 +140,11 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	authCacheRetention, err = time.ParseDuration(getEnv("GANTED_AUTH_CACHE_RETENTION", "10m"))
+	authCacheRetention, err := time.ParseDuration(getEnv("GANTED_AUTH_CACHE_RETENTION", "10m"))
 	if err != nil {
 		panic(err)
 	}
-	authCacheGC, err = time.ParseDuration(getEnv("GANTED_AUTH_CACHE_GC", "10m"))
+	authCacheGC, err := time.ParseDuration(getEnv("GANTED_AUTH_CACHE_GC", "10m"))
 	if err != nil {
 		panic(err)
 	}
@@ -147,17 +155,21 @@ func main() {
 		dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(bindAddr)}
 	}
 
-	// Clear expired cache entries at interval of GANTED_AUTH_CACHE_GC
-	go cacheGC()
+	credentials := &RadiusCredentials{
+		Server: radiusAddr,
+		Secret: []byte(radiusSecret),
+		Cache: RadiusCache{
+			Retention: authCacheRetention,
+			GC:        authCacheGC,
+		},
+	}
+	credentials.StartGCWorker()
 
 	server, err := socks5.New(&socks5.Config{
-		Credentials: &RadiusCredentials{
-			Server: radiusAddr,
-			Secret: []byte(radiusSecret),
-		},
-		Rules:  serverACL,
-		Logger: log.Default(),
-		Dial:   dialer.DialContext,
+		Credentials: credentials,
+		Rules:       serverACL,
+		Logger:      log.Default(),
+		Dial:        dialer.DialContext,
 	})
 	if err != nil {
 		log.Fatalf("[ERR] Create socks5 server: %s", err)
