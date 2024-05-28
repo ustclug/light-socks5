@@ -1,4 +1,4 @@
-FROM smartentry/debian:9
+FROM smartentry/debian:12
 
 MAINTAINER Yifan Gao <docker@yfgao.com>
 
