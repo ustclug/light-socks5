@@ -143,7 +143,7 @@ func (s *Server) ServeConn(conn net.Conn) error {
 	// Authenticate the connection
 	authContext, err := s.authenticate(conn, bufConn)
 	if err != nil {
-		err = fmt.Errorf("Failed to authenticate %s:%d: %w", remoteAddr.IP, remoteAddr.Port, err)
+		err = fmt.Errorf("Failed to authenticate %s: %w", remoteAddr, err)
 		s.config.Logger.Printf("[ERR] socks: %v", err)
 		return err
 	}
