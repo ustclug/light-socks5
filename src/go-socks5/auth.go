@@ -15,9 +15,16 @@ const (
 )
 
 var (
-	UserAuthFailed  = fmt.Errorf("User authentication failed")
 	NoSupportedAuth = fmt.Errorf("No supported authentication mechanism")
 )
+
+type UserAuthFailed struct {
+	Username, Password string
+}
+
+func (err UserAuthFailed) Error() string {
+	return "User authentication failed: " + err.Username
+}
 
 // A Request encapsulates authentication state provided
 // during negotiation
@@ -102,7 +109,7 @@ func (a UserPassAuthenticator) Authenticate(reader io.Reader, writer io.Writer) 
 		if _, err := writer.Write([]byte{userAuthVersion, authFailure}); err != nil {
 			return nil, err
 		}
-		return nil, UserAuthFailed
+		return nil, UserAuthFailed{Username: string(user), Password: string(pass)}
 	}
 
 	// Done

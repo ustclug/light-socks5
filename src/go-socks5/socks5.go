@@ -120,6 +120,10 @@ func (s *Server) Serve(l net.Listener) error {
 // ServeConn is used to serve a single connection.
 func (s *Server) ServeConn(conn net.Conn) error {
 	defer conn.Close()
+	remoteAddr, ok := conn.RemoteAddr().(*net.TCPAddr)
+	if !ok {
+		return fmt.Errorf("Invalid remote address type: %T", conn.RemoteAddr())
+	}
 	bufConn := bufio.NewReader(conn)
 
 	// Read the version byte
@@ -139,7 +143,7 @@ func (s *Server) ServeConn(conn net.Conn) error {
 	// Authenticate the connection
 	authContext, err := s.authenticate(conn, bufConn)
 	if err != nil {
-		err = fmt.Errorf("Failed to authenticate: %v", err)
+		err = fmt.Errorf("Failed to authenticate %s:%d: %w", remoteAddr.IP, remoteAddr.Port, err)
 		s.config.Logger.Printf("[ERR] socks: %v", err)
 		return err
 	}
@@ -154,9 +158,7 @@ func (s *Server) ServeConn(conn net.Conn) error {
 		return fmt.Errorf("Failed to read destination address: %v", err)
 	}
 	request.AuthContext = authContext
-	if client, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
-		request.RemoteAddr = &AddrSpec{IP: client.IP, Port: client.Port}
-	}
+	request.RemoteAddr = &AddrSpec{IP: remoteAddr.IP, Port: remoteAddr.Port}
 
 	// Process the client request
 	if err := s.handleRequest(request, conn); err != nil {

@@ -77,7 +77,7 @@ func TestPasswordAuth_Invalid(t *testing.T) {
 	s, _ := New(&Config{AuthMethods: []Authenticator{cator}})
 
 	ctx, err := s.authenticate(&resp, req)
-	if err != UserAuthFailed {
+	if _, ok := err.(UserAuthFailed); !ok {
 		t.Fatalf("err: %v", err)
 	}
 
