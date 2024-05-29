@@ -1,6 +1,8 @@
 module ganted
 
-go 1.19
+go 1.22.3
+
+replace github.com/armon/go-socks5 => ./go-socks5
 
 require (
 	github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5
