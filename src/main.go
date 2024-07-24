@@ -131,6 +131,26 @@ func init() {
 	}
 }
 
+func init() {
+	// init dir /var/log/ganted
+	if _, err := os.Stat("/var/log/ganted"); os.IsNotExist(err) {
+		os.Mkdir("/var/log/ganted", 0755)
+	}
+}
+
+func initFileLogger(filePath string) (*log.Logger, error) {
+        if filePath == "" {
+	        return nil, nil
+	}
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		log.Fatalf("[ERR] Open log file: %s", err)
+		return nil, err
+	}
+	logger := log.New(file, "", log.LstdFlags)
+	return logger, nil
+}
+
 func main() {
 	listenAddr := getEnv("GANTED_LISTEN", "127.0.0.1:6626")
 	radiusAddr := getEnv("RADIUS_SERVER", "127.0.0.1:1812")
@@ -165,10 +185,20 @@ func main() {
 	}
 	credentials.StartGCWorker()
 
+	accessLogger, err := initFileLogger(getEnv("GANTED_ACCESS_LOG", ""))
+	if err != nil {
+		log.Fatalf("[ERR] Failed to init access log: %s", err)
+	}
+	errorLogger, err := initFileLogger(getEnv("GANTED_ERROR_LOG", ""))
+	if err != nil {
+		log.Fatalf("[ERR] Failed to init error log: %s", err)
+	}
 	server, err := socks5.New(&socks5.Config{
 		Credentials: credentials,
 		Rules:       serverACL,
 		Logger:      log.Default(),
+		AccessLogger: accessLogger,
+		ErrorLogger: errorLogger,
 		Dial:        dialer.DialContext,
 	})
 	if err != nil {
