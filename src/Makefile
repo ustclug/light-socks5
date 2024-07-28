@@ -1,9 +1,13 @@
 BIN := ganted
+GANTED2RADIUS_BIN := ganted2radius
 GOFLAGS := -ldflags='-s -w'
 
 .PHONY: all
 
-all: $(BIN)
+all: $(BIN) $(GANTED2RADIUS_BIN)
 
-$(BIN): $(wildcard *.go) go.mod go.sum
-	go build $(GOFLAGS) -o "$@"
+$(BIN): $(filter-out ganted2radius.go, $(wildcard *.go)) go.mod go.sum
+	go build $(GOFLAGS) -o "$@" "$<"
+
+$(GANTED2RADIUS_BIN): ganted2radius.go
+	go build $(GOFLAGS) -o "$@" "$<"
