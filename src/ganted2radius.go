@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
-	"path/filepath"
 
 	"golang.org/x/net/context"
 	"layeh.com/radius"
@@ -71,7 +71,7 @@ func parseLogFile(filename string) (map[string]int, error) {
 }
 
 func (r *RadiusCredentials) sendAccountingData(identity string, bytes int) error {
-        // send an CodeAccessRequest for test
+	// send an CodeAccessRequest for test
 	sessionID := strconv.FormatInt(time.Now().Unix(), 10)
 	fmt.Printf("Sending accounting data for identity %s, session ID %s, bytes %d\n", identity, sessionID, bytes)
 
@@ -115,7 +115,7 @@ func (r *RadiusCredentials) sendAccountingData(identity string, bytes int) error
 
 func (r *RadiusCredentials) accounting(accessLogFile string, archiveLogFile string) error {
 	if archiveLogFile == "" {
-                archiveLogFile = filepath.Join(filepath.Dir(accessLogFile), "archive.log")
+		archiveLogFile = filepath.Join(filepath.Dir(accessLogFile), "archive.log")
 	}
 	if err := archiveLog(accessLogFile, archiveLogFile); err != nil {
 		return err

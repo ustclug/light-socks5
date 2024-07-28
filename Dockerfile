@@ -15,6 +15,5 @@ ENV GANTED_LISTEN=:6626 \
     GANTED_BIND_OUTPUT=0.0.0.0 \
     GANTED_AUTH_CACHE_RETENTION=10m \
     GANTED_AUTH_CACHE_GC=10m \
-    GANTED_ACCESS_LOG=/var/log/ganted/access.log \
-    GANTED_ERROR_LOG=/var/log/ganted/error.log
+    GANTED_LOG_DIR=/var/log/ganted
 CMD ["./ganted"]

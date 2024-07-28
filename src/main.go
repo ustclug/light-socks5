@@ -10,11 +10,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/robfig/cron"
 	"github.com/armon/go-socks5"
 	"github.com/kisom/netallow"
+	"github.com/robfig/cron"
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
+	"path/filepath"
 )
 
 type ACL struct {
@@ -47,11 +48,11 @@ func (acl *ACL) Set(s string) error {
 }
 
 type RadiusCredentials struct {
-	Server string
+	Server           string
 	AccountingServer string
-	Secret []byte
-	NASIdentifier string
-	Cache  RadiusCache
+	Secret           []byte
+	NASIdentifier    string
+	Cache            RadiusCache
 }
 
 type RadiusCache struct {
@@ -119,12 +120,12 @@ func (r *RadiusCredentials) StartGCWorker() {
 	go r.gcworker()
 }
 
-func (r *RadiusCredentials) accountingCron() *cron.Cron {
-        // hourly accounting cron job
-     	c := cron.New()
+func (r *RadiusCredentials) accountingCron(accessLogFile, archiveLogFile string) *cron.Cron {
+	// hourly accounting cron job
+	c := cron.New()
 	c.AddFunc("0 0 * * * *", func() {
 		// accounting
-		err := r.accounting("/var/log/ganted/access.log", "/var/log/ganted/archive.log")
+		err := r.accounting(accessLogFile, archiveLogFile)
 		if err != nil {
 			log.Printf("[ERR] Accounting error: %s\n", err)
 		}
@@ -149,15 +150,16 @@ func init() {
 }
 
 func init() {
-	// init dir /var/log/ganted
-	if _, err := os.Stat("/var/log/ganted"); os.IsNotExist(err) {
-		os.Mkdir("/var/log/ganted", 0755)
+	// init dir GANTED_LOG_DIR
+	gantedLogDir := getEnv("GANTED_LOG_DIR", "/var/log/ganted")
+	if _, err := os.Stat(gantedLogDir); os.IsNotExist(err) {
+		os.Mkdir(gantedLogDir, 0755)
 	}
 }
 
 func initFileLogger(filePath string) (*log.Logger, error) {
-        if filePath == "" {
-	        return nil, nil
+	if filePath == "" {
+		return nil, nil
 	}
 	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
@@ -195,34 +197,35 @@ func main() {
 	}
 
 	credentials := &RadiusCredentials{
-		Server: radiusAddr,
+		Server:           radiusAddr,
 		AccountingServer: radiusAccountingAddr,
-		Secret: []byte(radiusSecret),
-		NASIdentifier: nasIdentifier,
+		Secret:           []byte(radiusSecret),
+		NASIdentifier:    nasIdentifier,
 		Cache: RadiusCache{
 			Retention: authCacheRetention,
 			GC:        authCacheGC,
 		},
 	}
+	gantedLogDir := getEnv("GANTED_LOG_DIR", "/var/log/ganted")
 	credentials.StartGCWorker()
-	c :=credentials.accountingCron()
+	c := credentials.accountingCron(filepath.Join(gantedLogDir, "access.log"), filepath.Join(gantedLogDir, "archive.log"))
 	defer c.Stop()
 
-	accessLogger, err := initFileLogger(getEnv("GANTED_ACCESS_LOG", ""))
+	accessLogger, err := initFileLogger(filepath.Join(gantedLogDir, "access.log"))
 	if err != nil {
 		log.Fatalf("[ERR] Failed to init access log: %s", err)
 	}
-	errorLogger, err := initFileLogger(getEnv("GANTED_ERROR_LOG", ""))
+	errorLogger, err := initFileLogger(filepath.Join(gantedLogDir, "error.log"))
 	if err != nil {
 		log.Fatalf("[ERR] Failed to init error log: %s", err)
 	}
 	server, err := socks5.New(&socks5.Config{
-		Credentials: credentials,
-		Rules:       serverACL,
-		Logger:      log.Default(),
+		Credentials:  credentials,
+		Rules:        serverACL,
+		Logger:       log.Default(),
 		AccessLogger: accessLogger,
-		ErrorLogger: errorLogger,
-		Dial:        dialer.DialContext,
+		ErrorLogger:  errorLogger,
+		Dial:         dialer.DialContext,
 	})
 	if err != nil {
 		log.Fatalf("[ERR] Create socks5 server: %s", err)
