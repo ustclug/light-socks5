@@ -6,8 +6,7 @@ RUN make
 
 FROM alpine:latest
 WORKDIR /app
-COPY --from=builder /usr/src/app/ganted /usr/src/app/ganted2radius ./
-COPY src/ganted2radius.sh /etc/periodic/hourly/
+COPY --from=builder /usr/src/app/ganted ./
 ENV GANTED_LISTEN=:6626 \
     RADIUS_SERVER=light-freeradius:1812 \
     RADIUS_ACCOUNTING_SERVER=light-freeradius:1813 \
@@ -18,4 +17,4 @@ ENV GANTED_LISTEN=:6626 \
     GANTED_AUTH_CACHE_GC=10m \
     GANTED_ACCESS_LOG=/var/log/ganted/access.log \
     GANTED_ERROR_LOG=/var/log/ganted/error.log
-CMD ["/bin/sh", "-c", "/usr/sbin/crond -l 2 -L /var/log/cron.log && ./ganted"]
+CMD ["./ganted"]

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/robfig/cron"
 	"github.com/armon/go-socks5"
 	"github.com/kisom/netallow"
 	"layeh.com/radius"
@@ -47,7 +48,9 @@ func (acl *ACL) Set(s string) error {
 
 type RadiusCredentials struct {
 	Server string
+	AccountingServer string
 	Secret []byte
+	NASIdentifier string
 	Cache  RadiusCache
 }
 
@@ -116,6 +119,20 @@ func (r *RadiusCredentials) StartGCWorker() {
 	go r.gcworker()
 }
 
+func (r *RadiusCredentials) accountingCron() *cron.Cron {
+        // hourly accounting cron job
+     	c := cron.New()
+	c.AddFunc("0 0 * * * *", func() {
+		// accounting
+		err := r.accounting("/var/log/ganted/access.log", "/var/log/ganted/archive.log")
+		if err != nil {
+			log.Printf("[ERR] Accounting error: %s\n", err)
+		}
+	})
+	c.Start()
+	return c
+}
+
 func getEnv(key, def string) string {
 	if v, ok := os.LookupEnv(key); ok {
 		return v
@@ -155,6 +172,8 @@ func main() {
 	listenAddr := getEnv("GANTED_LISTEN", "127.0.0.1:6626")
 	radiusAddr := getEnv("RADIUS_SERVER", "127.0.0.1:1812")
 	radiusSecret := getEnv("RADIUS_SECRET", "")
+	radiusAccountingAddr := getEnv("RADIUS_ACCOUNTING_SERVER", "127.0.0.1:1813")
+	nasIdentifier := getEnv("NAS_IDENTIFIER", "ganted")
 	serverACL := &ACL{BasicNet: netallow.NewBasicNet()}
 	err := serverACL.Set(getEnv("GANTED_ACL", ""))
 	if err != nil {
@@ -177,13 +196,17 @@ func main() {
 
 	credentials := &RadiusCredentials{
 		Server: radiusAddr,
+		AccountingServer: radiusAccountingAddr,
 		Secret: []byte(radiusSecret),
+		NASIdentifier: nasIdentifier,
 		Cache: RadiusCache{
 			Retention: authCacheRetention,
 			GC:        authCacheGC,
 		},
 	}
 	credentials.StartGCWorker()
+	c :=credentials.accountingCron()
+	defer c.Stop()
 
 	accessLogger, err := initFileLogger(getEnv("GANTED_ACCESS_LOG", ""))
 	if err != nil {

@@ -10,4 +10,7 @@ require (
 	layeh.com/radius v0.0.0-20231213012653-1006025d24f8
 )
 
-require golang.org/x/net v0.25.0 // indirect
+require (
+	github.com/robfig/cron v1.2.0 // indirect
+	golang.org/x/net v0.25.0 // indirect
+)
