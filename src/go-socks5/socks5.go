@@ -63,7 +63,7 @@ type Config struct {
 // ConnWrapper is a wrapper around a net.Conn that provides a way to log read/write bytes
 type ConnWrapper struct {
 	net.Conn
-	ReadBytes int64
+	ReadBytes  int64
 	WriteBytes int64
 }
 
@@ -197,23 +197,25 @@ func (s *Server) ServeConn(conn net.Conn) error {
 	request.AuthContext = authContext
 	request.RemoteAddr = &AddrSpec{IP: remoteAddr.IP, Port: remoteAddr.Port}
 
+	// log access
+	// remoteAddr, identity, time_now, request, bytes_in, bytes_out
+	defer func() {
+		s.config.AccessLogger.Printf("%s %s %s %s %d %d",
+			remoteAddr,
+			authContext.Payload["Username"],
+			time.Now().Format(time.RFC3339),
+			request.DestAddr.String(),
+			wrappedConn.ReadBytes,
+			wrappedConn.WriteBytes,
+		)
+	}()
+
 	// Process the client request
 	if err := s.handleRequest(request, wrappedConn); err != nil {
 		err = fmt.Errorf("Failed to handle request: %v", err)
 		s.config.Logger.Printf("[ERR] socks %s: %v", remoteAddr, err)
 		return err
 	}
-
-	// log access
-	// remoteAddr, identity, time_now, request, bytes_in, bytes_out
-	s.config.AccessLogger.Printf("%s %s %s %s %d %d",
-		remoteAddr,
-		authContext.Payload["Username"],
-		time.Now().Format(time.RFC3339),
-		request.DestAddr.String(),
-		wrappedConn.ReadBytes,
-		wrappedConn.WriteBytes,
-	)
 
 	return nil
 }

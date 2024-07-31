@@ -4,41 +4,77 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"golang.org/x/net/context"
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
 	"layeh.com/radius/rfc2866"
 )
 
-func archiveLog(src, dst string) error {
-	srcFile, err := os.Open(src)
+func compressFile(filename string) error {
+	// open the file
+	file, err := os.Open(filename)
 	if err != nil {
 		return err
 	}
-	defer srcFile.Close()
-
-	dstFile, err := os.Create(dst)
+	defer file.Close()
+	// create the compressed file, err if it already exists
+	compressedFilename := filename + ".zst"
+	compressedFile, err := os.Create(compressedFilename)
 	if err != nil {
 		return err
 	}
-	defer dstFile.Close()
-	// Copy the source file to the destination file
-	_, err = io.Copy(dstFile, srcFile)
+	defer compressedFile.Close()
+	// create the zstd writer
+	zw, err := zstd.NewWriter(compressedFile)
 	if err != nil {
 		return err
 	}
-	// Clear the source file
-	err = os.Truncate(src, 0)
+	// copy the file to the zstd writer
+	_, err = io.Copy(zw, file)
 	if err != nil {
+		return err
+	}
+	// flush the zstd writer
+	if err := zw.Close(); err != nil {
+		return err
+	}
+	// remove the original file
+	if err := os.Remove(filename); err != nil {
 		return err
 	}
 	return nil
+}
+
+func archiveLogs(logDir string) error {
+	logPattern := regexp.MustCompile(`^access-\d{14}\.log$`)
+	// compress all access-<datetime>.log files to access-<datetime>.log.zst
+	err := filepath.Walk(logDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		// check if the file is a access-<yyyyMMddhhmmss>.log file
+		if !info.IsDir() && logPattern.MatchString(info.Name()) {
+			// compress the file
+			if err := compressFile(path); err != nil {
+				fmt.Fprintf(os.Stderr, "Error compressing file %s: %v\n", path, err)
+				return err
+			} else {
+				fmt.Printf("Compressed file %s\n", path)
+				return nil
+			}
+		}
+		return nil
+	})
+	return err
 }
 
 func parseLogFile(filename string) (map[string]int, error) {
@@ -54,14 +90,22 @@ func parseLogFile(filename string) (map[string]int, error) {
 	for scanner.Scan() {
 		line := scanner.Text()
 		fields := strings.Fields(line)
-		if len(fields) < 8 {
+		if len(fields) != 8 {
 			fmt.Printf("Skipping malformed line: %s\n", line)
 			continue
 		}
 
 		identity := fields[3]
-		bytesIn, _ := strconv.Atoi(fields[6])
-		bytesOut, _ := strconv.Atoi(fields[7])
+		bytesIn, err := strconv.Atoi(fields[6])
+		if err != nil {
+			fmt.Printf("Error parsing bytes in: %v\n", err)
+			continue
+		}
+		bytesOut, err := strconv.Atoi(fields[7])
+		if err != nil {
+			fmt.Printf("Error parsing bytes out: %v\n", err)
+			continue
+		}
 		totalBytes := bytesIn + bytesOut
 
 		stats[identity] += totalBytes
@@ -113,11 +157,27 @@ func (r *RadiusCredentials) sendAccountingData(identity string, bytes int) error
 	return nil
 }
 
-func (r *RadiusCredentials) accounting(accessLogFile string, archiveLogFile string) error {
-	if archiveLogFile == "" {
-		archiveLogFile = filepath.Join(filepath.Dir(accessLogFile), "archive.log")
+func (r *RadiusCredentials) accounting(accessLogger *log.Logger) error {
+	// Get the log directory
+	accessLogFileHandler, ok := accessLogger.Writer().(*os.File)
+	if !ok {
+		return fmt.Errorf("access log file is not a file")
 	}
-	if err := archiveLog(accessLogFile, archiveLogFile); err != nil {
+	accessLogFile := accessLogFileHandler.Name()
+	logDir := filepath.Dir(accessLogFile)
+	// Compress all access-<datetime>.log files in the log directory
+	if err := archiveLogs(logDir); err != nil {
+		return err
+	}
+	// rename the access.log file to access-<datetime>.log
+	now := time.Now()
+	dotIndex := strings.LastIndex(accessLogFile, ".")
+	archiveLogFile := accessLogFile[:dotIndex] + "-" + now.Format("20060102150405") + accessLogFile[dotIndex:]
+	if err := os.Rename(accessLogFile, archiveLogFile); err != nil {
+		return err
+	}
+	// ask accessLogger to reopen the access.log file
+	if err := setFileLoggerOutput(accessLogger, accessLogFile); err != nil {
 		return err
 	}
 	stats, err := parseLogFile(archiveLogFile)

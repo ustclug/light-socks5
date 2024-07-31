@@ -12,7 +12,7 @@ import (
 
 	"github.com/armon/go-socks5"
 	"github.com/kisom/netallow"
-	"github.com/robfig/cron"
+	"github.com/robfig/cron/v3"
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
 	"path/filepath"
@@ -120,16 +120,20 @@ func (r *RadiusCredentials) StartGCWorker() {
 	go r.gcworker()
 }
 
-func (r *RadiusCredentials) accountingCron(accessLogFile, archiveLogFile string) *cron.Cron {
+func (r *RadiusCredentials) accountingCron(accessLogger, errorLogger *log.Logger) *cron.Cron {
 	// hourly accounting cron job
 	c := cron.New()
-	c.AddFunc("0 0 * * * *", func() {
+	_, err := c.AddFunc("@hourly", func() {
 		// accounting
-		err := r.accounting(accessLogFile, archiveLogFile)
+		err := r.accounting(accessLogger)
 		if err != nil {
-			log.Printf("[ERR] Accounting error: %s\n", err)
+			errorLogger.Printf("Accounting error: %s\n", err)
 		}
 	})
+	if err != nil {
+		log.Fatalf("[ERR] Add accounting cron job: %s", err)
+		return nil
+	}
 	c.Start()
 	return c
 }
@@ -157,16 +161,24 @@ func init() {
 	}
 }
 
-func initFileLogger(filePath string) (*log.Logger, error) {
+func setFileLoggerOutput(logger *log.Logger, filePath string) error {
 	if filePath == "" {
-		return nil, nil
+		return nil
 	}
 	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		log.Fatalf("[ERR] Open log file: %s", err)
+		return err
+	}
+	logger.SetOutput(file)
+	return nil
+}
+
+func initFileLogger(filePath string) (*log.Logger, error) {
+	logger := log.New(os.Stdout, "", log.LstdFlags)
+	if err := setFileLoggerOutput(logger, filePath); err != nil {
 		return nil, err
 	}
-	logger := log.New(file, "", log.LstdFlags)
 	return logger, nil
 }
 
@@ -208,8 +220,6 @@ func main() {
 	}
 	gantedLogDir := getEnv("GANTED_LOG_DIR", "/var/log/ganted")
 	credentials.StartGCWorker()
-	c := credentials.accountingCron(filepath.Join(gantedLogDir, "access.log"), filepath.Join(gantedLogDir, "archive.log"))
-	defer c.Stop()
 
 	accessLogger, err := initFileLogger(filepath.Join(gantedLogDir, "access.log"))
 	if err != nil {
@@ -218,6 +228,12 @@ func main() {
 	errorLogger, err := initFileLogger(filepath.Join(gantedLogDir, "error.log"))
 	if err != nil {
 		log.Fatalf("[ERR] Failed to init error log: %s", err)
+	}
+	c := credentials.accountingCron(accessLogger, errorLogger)
+	if c == nil {
+		log.Fatalf("[ERR] Failed to start accounting cron job")
+	} else {
+		defer c.Stop()
 	}
 	server, err := socks5.New(&socks5.Config{
 		Credentials:  credentials,
