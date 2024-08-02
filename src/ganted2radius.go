@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -19,16 +21,16 @@ import (
 	"layeh.com/radius/rfc2866"
 )
 
-func compressFile(filename string) error {
+func compressFile(filepath string) error {
 	// open the file
-	file, err := os.Open(filename)
+	file, err := os.Open(filepath)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 	// create the compressed file, err if it already exists
-	compressedFilename := filename + ".zst"
-	compressedFile, err := os.Create(compressedFilename)
+	compressedFilepath := filepath + ".zst"
+	compressedFile, err := os.Create(compressedFilepath)
 	if err != nil {
 		return err
 	}
@@ -48,33 +50,82 @@ func compressFile(filename string) error {
 		return err
 	}
 	// remove the original file
-	if err := os.Remove(filename); err != nil {
+	if err := os.Remove(filepath); err != nil {
 		return err
 	}
 	return nil
 }
 
-func archiveLogs(logDir string) error {
-	logPattern := regexp.MustCompile(`^access-\d{14}\.log$`)
-	// compress all access-<datetime>.log files to access-<datetime>.log.zst
-	err := filepath.Walk(logDir, func(path string, info os.FileInfo, err error) error {
+func findLogs(logDir string, logPattern *regexp.Regexp) ([]string, error) {
+	var logFiles []string
+	err := filepath.WalkDir(logDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		// check if the file is a access-<yyyyMMddhhmmss>.log file
-		if !info.IsDir() && logPattern.MatchString(info.Name()) {
-			// compress the file
-			if err := compressFile(path); err != nil {
-				fmt.Fprintf(os.Stderr, "Error compressing file %s: %v\n", path, err)
-				return err
-			} else {
-				fmt.Printf("Compressed file %s\n", path)
-				return nil
-			}
+		if !d.IsDir() && logPattern.MatchString(d.Name()) {
+			logFiles = append(logFiles, path)
 		}
 		return nil
 	})
-	return err
+	return logFiles, err
+}
+
+func archiveLogs(logDir string, maxBackup int) error {
+	logPattern := regexp.MustCompile(`^access-\d{14}\.log$`)
+	logFiles, err := findLogs(logDir, logPattern)
+	if err != nil {
+		return err
+	}
+	if len(logFiles) >= maxBackup {
+		sort.Strings(logFiles)
+		logFiles = logFiles[:maxBackup-1]
+		// create archive log file with current date
+		date := time.Now().Format("20060102")
+		archiveFileName := fmt.Sprintf("access-%s.log", date)
+		archiveFilePath := filepath.Join(logDir, archiveFileName)
+		// err if access-<date>.log.zst exists, and do nothing
+		if _, err := os.Stat(archiveFilePath + ".zst"); !os.IsNotExist(err) {
+			return fmt.Errorf("File %s exists.", archiveFileName+".zst")
+		}
+		archiveFile, err := os.Create(archiveFilePath)
+		if err != nil {
+			return err
+		}
+		defer archiveFile.Close()
+		defer func() {
+			// If the archiveFile exists, some error occur, and archiveFile need to delete
+			// As the compressFile will remove the original archiveFile
+			// Else, everything is ok, delete the original log files
+			if _, err := os.Stat(archiveFilePath); !os.IsNotExist(err) {
+				if err := os.Remove(archiveFilePath); err != nil {
+					fmt.Errorf("err when removing file %s", archiveFilePath)
+				}
+			} else {
+				for _, logFile := range logFiles {
+					if err := os.Remove(logFile); err != nil {
+						fmt.Errorf("err when removing file %s", archiveFilePath)
+					}
+				}
+			}
+		}()
+		// concatenate `maxBackup` access-<datetime>.log files to access-<date>.log
+		for _, logFile := range logFiles {
+			src, err := os.Open(logFile)
+			if err != nil {
+				return err
+			}
+			_, err = io.Copy(archiveFile, src)
+			if err != nil {
+				return err
+			}
+			src.Close()
+		}
+		// compress access-<date>.log
+		if err := compressFile(archiveFilePath); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func parseLogFile(filename string) (map[string]int, error) {
@@ -165,27 +216,23 @@ func (r *RadiusCredentials) accounting(accessLogger *log.Logger) error {
 	}
 	accessLogFile := accessLogFileHandler.Name()
 	logDir := filepath.Dir(accessLogFile)
-	// Compress all access-<datetime>.log files in the log directory
-	if err := archiveLogs(logDir); err != nil {
-		return err
-	}
 	// rename the access.log file to access-<datetime>.log
 	now := time.Now()
 	dotIndex := strings.LastIndex(accessLogFile, ".")
-	archiveLogFile := accessLogFile[:dotIndex] + "-" + now.Format("20060102150405") + accessLogFile[dotIndex:]
-	if err := os.Rename(accessLogFile, archiveLogFile); err != nil {
+	accountingLogFile := accessLogFile[:dotIndex] + "-" + now.Format("20060102150405") + accessLogFile[dotIndex:]
+	if err := os.Rename(accessLogFile, accountingLogFile); err != nil {
 		return err
 	}
 	// ask accessLogger to reopen the access.log file
 	if err := setFileLoggerOutput(accessLogger, accessLogFile); err != nil {
 		return err
 	}
-	stats, err := parseLogFile(archiveLogFile)
+	stats, err := parseLogFile(accountingLogFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing log file: %v\n", err)
 		return err
 	}
-
+	// Sending accounting data
 	for identity, bytes := range stats {
 		err := r.sendAccountingData(identity, bytes)
 		if err != nil {
@@ -193,6 +240,10 @@ func (r *RadiusCredentials) accounting(accessLogger *log.Logger) error {
 		} else {
 			fmt.Printf("Sent accounting data for identity %s\n", identity)
 		}
+	}
+	// Compress all(actually 24) access-<datetime>.log files in the log directory
+	if err := archiveLogs(logDir, 24); err != nil {
+		return err
 	}
 	return nil
 }
