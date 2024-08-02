@@ -78,36 +78,18 @@ func archiveLogs(logDir string, maxBackup int) error {
 	}
 	if len(logFiles) >= maxBackup {
 		sort.Strings(logFiles)
-		logFiles = logFiles[:maxBackup-1]
 		// create archive log file with current date
 		date := time.Now().Format("20060102")
-		archiveFileName := fmt.Sprintf("access-%s.log", date)
+		archiveFileName := fmt.Sprintf("archived-access-%s.log", date)
 		archiveFilePath := filepath.Join(logDir, archiveFileName)
 		// err if access-<date>.log.zst exists, and do nothing
 		if _, err := os.Stat(archiveFilePath + ".zst"); !os.IsNotExist(err) {
-			return fmt.Errorf("File %s exists.", archiveFileName+".zst")
+			return fmt.Errorf("file %s exists", archiveFileName+".zst")
 		}
 		archiveFile, err := os.Create(archiveFilePath)
 		if err != nil {
 			return err
 		}
-		defer archiveFile.Close()
-		defer func() {
-			// If the archiveFile exists, some error occur, and archiveFile need to delete
-			// As the compressFile will remove the original archiveFile
-			// Else, everything is ok, delete the original log files
-			if _, err := os.Stat(archiveFilePath); !os.IsNotExist(err) {
-				if err := os.Remove(archiveFilePath); err != nil {
-					fmt.Errorf("err when removing file %s", archiveFilePath)
-				}
-			} else {
-				for _, logFile := range logFiles {
-					if err := os.Remove(logFile); err != nil {
-						fmt.Errorf("err when removing file %s", archiveFilePath)
-					}
-				}
-			}
-		}()
 		// concatenate `maxBackup` access-<datetime>.log files to access-<date>.log
 		for _, logFile := range logFiles {
 			src, err := os.Open(logFile)
@@ -123,6 +105,21 @@ func archiveLogs(logDir string, maxBackup int) error {
 		// compress access-<date>.log
 		if err := compressFile(archiveFilePath); err != nil {
 			return err
+		}
+		archiveFile.Close()
+		// If the archiveFile exists, some error occur, and archiveFile need to delete
+		// As the compressFile will remove the original archiveFile
+		// Else, everything is ok, delete the original log files
+		if _, err := os.Stat(archiveFilePath); !os.IsNotExist(err) {
+			if err := os.Remove(archiveFilePath); err != nil {
+				return fmt.Errorf("err when removing file %s", archiveFilePath)
+			}
+		} else {
+			for _, logFile := range logFiles {
+				if err := os.Remove(logFile); err != nil {
+					return fmt.Errorf("err when removing file %s", archiveFilePath)
+				}
+			}
 		}
 	}
 	return nil
@@ -241,7 +238,7 @@ func (r *RadiusCredentials) accounting(accessLogger *log.Logger) error {
 			fmt.Printf("Sent accounting data for identity %s\n", identity)
 		}
 	}
-	// Compress all(actually 24) access-<datetime>.log files in the log directory
+	// Compress all access-<datetime>.log files in the log directory
 	if err := archiveLogs(logDir, 24); err != nil {
 		return err
 	}
