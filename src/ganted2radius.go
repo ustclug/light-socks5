@@ -90,23 +90,24 @@ func archiveLogs(logDir string, maxBackup int) error {
 		if err != nil {
 			return err
 		}
+		defer archiveFile.Close()
 		// concatenate `maxBackup` access-<datetime>.log files to access-<date>.log
 		for _, logFile := range logFiles {
 			src, err := os.Open(logFile)
 			if err != nil {
 				return err
 			}
+			defer src.Close()
 			_, err = io.Copy(archiveFile, src)
 			if err != nil {
 				return err
 			}
-			src.Close()
+
 		}
 		// compress access-<date>.log
 		if err := compressFile(archiveFilePath); err != nil {
 			return err
 		}
-		archiveFile.Close()
 		// If the archiveFile exists, some error occur, and archiveFile need to delete
 		// As the compressFile will remove the original archiveFile
 		// Else, everything is ok, delete the original log files
@@ -139,19 +140,19 @@ func parseLogFile(filename string) (map[string]int, error) {
 		line := scanner.Text()
 		fields := strings.Fields(line)
 		if len(fields) != 8 {
-			fmt.Printf("Skipping malformed line: %s\n", line)
+			log.Printf("Skipping malformed line: %s\n", line)
 			continue
 		}
 
 		identity := fields[3]
 		bytesIn, err := strconv.Atoi(fields[6])
 		if err != nil {
-			fmt.Printf("Error parsing bytes in: %v\n", err)
+			log.Printf("Error parsing bytes in: %v\n", err)
 			continue
 		}
 		bytesOut, err := strconv.Atoi(fields[7])
 		if err != nil {
-			fmt.Printf("Error parsing bytes out: %v\n", err)
+			log.Printf("Error parsing bytes out: %v\n", err)
 			continue
 		}
 		totalBytes := bytesIn + bytesOut
@@ -165,7 +166,7 @@ func parseLogFile(filename string) (map[string]int, error) {
 func (r *RadiusCredentials) sendAccountingData(identity string, bytes int) error {
 	// send an CodeAccessRequest for test
 	sessionID := strconv.FormatInt(time.Now().Unix(), 10)
-	fmt.Printf("Sending accounting data for identity %s, session ID %s, bytes %d\n", identity, sessionID, bytes)
+	log.Printf("Sending accounting data for identity %s, session ID %s, bytes %d\n", identity, sessionID, bytes)
 
 	// Send start accounting packet
 	startPacket := radius.New(radius.CodeAccountingRequest, []byte(r.Secret))
@@ -173,7 +174,7 @@ func (r *RadiusCredentials) sendAccountingData(identity string, bytes int) error
 	rfc2865.NASIdentifier_SetString(startPacket, r.NASIdentifier)
 	rfc2866.AcctSessionID_Set(startPacket, []byte(sessionID))
 	rfc2866.AcctStatusType_Set(startPacket, rfc2866.AcctStatusType_Value_Start)
-	fmt.Printf("Sending start packet\n")
+	// log.Printf("Sending start packet\n")
 
 	startReply, err := radius.Exchange(context.Background(), startPacket, r.AccountingServer)
 	if err != nil {
@@ -182,7 +183,7 @@ func (r *RadiusCredentials) sendAccountingData(identity string, bytes int) error
 	if startReply.Code != radius.CodeAccountingResponse {
 		return fmt.Errorf("unexpected response from RADIUS server")
 	}
-	fmt.Printf("Received start reply\n")
+	// log.Printf("Received start reply\n")
 
 	// Send stop accounting packet
 	stopPacket := radius.New(radius.CodeAccountingRequest, r.Secret)
@@ -191,7 +192,7 @@ func (r *RadiusCredentials) sendAccountingData(identity string, bytes int) error
 	rfc2866.AcctSessionID_SetString(stopPacket, sessionID)
 	rfc2866.AcctStatusType_Set(stopPacket, rfc2866.AcctStatusType_Value_Stop)
 	rfc2866.AcctOutputOctets_Set(stopPacket, rfc2866.AcctOutputOctets(bytes))
-	fmt.Printf("Sending stop packet\n")
+	// log.Printf("Sending stop packet\n")
 
 	stopReply, err := radius.Exchange(context.Background(), stopPacket, r.AccountingServer)
 	if err != nil {
@@ -200,7 +201,7 @@ func (r *RadiusCredentials) sendAccountingData(identity string, bytes int) error
 	if stopReply.Code != radius.CodeAccountingResponse {
 		return fmt.Errorf("unexpected response from RADIUS server")
 	}
-	fmt.Printf("Received stop reply\n")
+	// log.Printf("Received stop reply\n")
 
 	return nil
 }
@@ -226,16 +227,16 @@ func (r *RadiusCredentials) accounting(accessLogger *log.Logger) error {
 	}
 	stats, err := parseLogFile(accountingLogFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error parsing log file: %v\n", err)
+		log.Printf("[ERR] Failed to parse log file %s: %v\n", accountingLogFile, err)
 		return err
 	}
 	// Sending accounting data
 	for identity, bytes := range stats {
 		err := r.sendAccountingData(identity, bytes)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error sending accounting data for identity %s: %v\n", identity, err)
+			log.Printf("[ERR] Failed to send accounting data for identity %s: %v\n", identity, err)
 		} else {
-			fmt.Printf("Sent accounting data for identity %s\n", identity)
+			log.Printf("Sent accounting data for identity %s\n", identity)
 		}
 	}
 	// Compress all access-<datetime>.log files in the log directory

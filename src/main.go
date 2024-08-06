@@ -132,7 +132,6 @@ func (r *RadiusCredentials) accountingCron(accessLogger, errorLogger *log.Logger
 	})
 	if err != nil {
 		log.Fatalf("[ERR] Add accounting cron job: %s", err)
-		return nil
 	}
 	c.Start()
 	return c
@@ -157,7 +156,9 @@ func init() {
 	// init dir GANTED_LOG_DIR
 	gantedLogDir := getEnv("GANTED_LOG_DIR", "/var/log/ganted")
 	if _, err := os.Stat(gantedLogDir); os.IsNotExist(err) {
-		os.Mkdir(gantedLogDir, 0755)
+		if err := os.Mkdir(gantedLogDir, 0755); err != nil {
+			panic(err)
+		}
 	}
 }
 
@@ -165,12 +166,15 @@ func setFileLoggerOutput(logger *log.Logger, filePath string) error {
 	if filePath == "" {
 		return nil
 	}
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		log.Fatalf("[ERR] Open log file: %s", err)
-		return err
 	}
+	prevWriter := logger.Writer()
 	logger.SetOutput(file)
+	if closer, ok := prevWriter.(io.Closer); ok {
+		closer.Close()
+	}
 	return nil
 }
 
