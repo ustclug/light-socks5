@@ -21,6 +21,9 @@ import (
 	"layeh.com/radius/rfc2866"
 )
 
+// compressFile compresses the given file using zstd compression.
+// if the compressed file exists or any operation fails,
+// it returns an error.
 func compressFile(filepath string) error {
 	// open the file
 	file, err := os.Open(filepath)
@@ -28,8 +31,16 @@ func compressFile(filepath string) error {
 		return err
 	}
 	defer file.Close()
-	// create the compressed file, err if it already exists
+
 	compressedFilepath := filepath + ".zst"
+	// Check if the file already exists first
+	if _, err := os.Stat(compressedFilepath); err == nil {
+		return fmt.Errorf("file %s exists", compressedFilepath)
+	} else if !os.IsNotExist(err) {
+		// If the error is something other than "file does not exist", return it
+		return err
+	}
+	// Create the file if it does not exist
 	compressedFile, err := os.Create(compressedFilepath)
 	if err != nil {
 		return err
@@ -82,9 +93,12 @@ func archiveLogs(logDir string, maxBackup int) error {
 		date := time.Now().Format("20060102")
 		archiveFileName := fmt.Sprintf("archived-access-%s.log", date)
 		archiveFilePath := filepath.Join(logDir, archiveFileName)
-		// err if access-<date>.log.zst exists, and do nothing
-		if _, err := os.Stat(archiveFilePath + ".zst"); !os.IsNotExist(err) {
+		// check if access-<date>.log.zst exists first
+		if _, err := os.Stat(archiveFilePath + ".zst"); err == nil {
 			return fmt.Errorf("file %s exists", archiveFileName+".zst")
+		} else if !os.IsNotExist(err) {
+			// If the error is something other than "file does not exist", return it
+			return err
 		}
 		archiveFile, err := os.Create(archiveFilePath)
 		if err != nil {
@@ -115,12 +129,14 @@ func archiveLogs(logDir string, maxBackup int) error {
 			if err := os.Remove(archiveFilePath); err != nil {
 				return fmt.Errorf("err when removing file %s", archiveFilePath)
 			}
-		} else {
+		} else if err == nil {
 			for _, logFile := range logFiles {
 				if err := os.Remove(logFile); err != nil {
-					return fmt.Errorf("err when removing file %s", archiveFilePath)
+					return fmt.Errorf("err when removing file %s", logFile)
 				}
 			}
+		} else {
+			return fmt.Errorf("Unknown err when clear original log file")
 		}
 	}
 	return nil
