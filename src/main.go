@@ -12,8 +12,10 @@ import (
 
 	"github.com/armon/go-socks5"
 	"github.com/kisom/netallow"
+	"github.com/robfig/cron/v3"
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
+	"path/filepath"
 )
 
 type ACL struct {
@@ -46,9 +48,11 @@ func (acl *ACL) Set(s string) error {
 }
 
 type RadiusCredentials struct {
-	Server string
-	Secret []byte
-	Cache  RadiusCache
+	Server           string
+	AccountingServer string
+	Secret           []byte
+	NASIdentifier    string
+	Cache            RadiusCache
 }
 
 type RadiusCache struct {
@@ -116,6 +120,23 @@ func (r *RadiusCredentials) StartGCWorker() {
 	go r.gcworker()
 }
 
+func (r *RadiusCredentials) accountingCron(accessLogger, errorLogger *log.Logger) *cron.Cron {
+	// hourly accounting cron job
+	c := cron.New()
+	_, err := c.AddFunc("@hourly", func() {
+		// accounting
+		err := r.accounting(accessLogger)
+		if err != nil {
+			errorLogger.Printf("Accounting error: %s\n", err)
+		}
+	})
+	if err != nil {
+		log.Fatalf("[ERR] Failed to add accounting cron job: %s", err)
+	}
+	c.Start()
+	return c
+}
+
 func getEnv(key, def string) string {
 	if v, ok := os.LookupEnv(key); ok {
 		return v
@@ -131,10 +152,46 @@ func init() {
 	}
 }
 
+func init() {
+	// init dir GANTED_LOG_DIR
+	gantedLogDir := getEnv("GANTED_LOG_DIR", "/var/log/ganted")
+	if _, err := os.Stat(gantedLogDir); os.IsNotExist(err) {
+		if err := os.Mkdir(gantedLogDir, 0755); err != nil {
+			log.Fatalf("[ERR] Failed to create ganted log directory %s: %s", gantedLogDir, err)
+		}
+	}
+}
+
+func setFileLoggerOutput(logger *log.Logger, filePath string) error {
+	if filePath == "" {
+		return nil
+	}
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		log.Fatalf("[ERR] Failed to open file %s: %s", filePath, err)
+	}
+	prevWriter := logger.Writer()
+	logger.SetOutput(file)
+	if closer, ok := prevWriter.(io.Closer); ok {
+		closer.Close()
+	}
+	return nil
+}
+
+func initFileLogger(filePath string) (*log.Logger, error) {
+	logger := log.New(os.Stdout, "", log.LstdFlags)
+	if err := setFileLoggerOutput(logger, filePath); err != nil {
+		return nil, err
+	}
+	return logger, nil
+}
+
 func main() {
 	listenAddr := getEnv("GANTED_LISTEN", "127.0.0.1:6626")
 	radiusAddr := getEnv("RADIUS_SERVER", "127.0.0.1:1812")
 	radiusSecret := getEnv("RADIUS_SECRET", "")
+	radiusAccountingAddr := getEnv("RADIUS_ACCOUNTING_SERVER", "127.0.0.1:1813")
+	nasIdentifier := getEnv("NAS_IDENTIFIER", "ganted")
 	serverACL := &ACL{BasicNet: netallow.NewBasicNet()}
 	err := serverACL.Set(getEnv("GANTED_ACL", ""))
 	if err != nil {
@@ -156,20 +213,39 @@ func main() {
 	}
 
 	credentials := &RadiusCredentials{
-		Server: radiusAddr,
-		Secret: []byte(radiusSecret),
+		Server:           radiusAddr,
+		AccountingServer: radiusAccountingAddr,
+		Secret:           []byte(radiusSecret),
+		NASIdentifier:    nasIdentifier,
 		Cache: RadiusCache{
 			Retention: authCacheRetention,
 			GC:        authCacheGC,
 		},
 	}
+	gantedLogDir := getEnv("GANTED_LOG_DIR", "/var/log/ganted")
 	credentials.StartGCWorker()
 
+	accessLogger, err := initFileLogger(filepath.Join(gantedLogDir, "access.log"))
+	if err != nil {
+		log.Fatalf("[ERR] Failed to init access log: %s", err)
+	}
+	errorLogger, err := initFileLogger(filepath.Join(gantedLogDir, "error.log"))
+	if err != nil {
+		log.Fatalf("[ERR] Failed to init error log: %s", err)
+	}
+	c := credentials.accountingCron(accessLogger, errorLogger)
+	if c == nil {
+		log.Fatalf("[ERR] Failed to start accounting cron job")
+	} else {
+		defer c.Stop()
+	}
 	server, err := socks5.New(&socks5.Config{
-		Credentials: credentials,
-		Rules:       serverACL,
-		Logger:      log.Default(),
-		Dial:        dialer.DialContext,
+		Credentials:  credentials,
+		Rules:        serverACL,
+		Logger:       log.Default(),
+		AccessLogger: accessLogger,
+		ErrorLogger:  errorLogger,
+		Dial:         dialer.DialContext,
 	})
 	if err != nil {
 		log.Fatalf("[ERR] Create socks5 server: %s", err)

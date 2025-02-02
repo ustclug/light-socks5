@@ -6,8 +6,10 @@ import (
 	"log"
 	"net"
 	"os"
+	"time"
 
 	"golang.org/x/net/context"
+	"sync/atomic"
 )
 
 const (
@@ -46,8 +48,39 @@ type Config struct {
 	// Defaults to stdout.
 	Logger *log.Logger
 
+	// AccessLogger can be used to provide a custom access log target.
+	// Defaults to stdout.
+	AccessLogger *log.Logger
+
+	// ErrorLogger can be used to provide a custom error log target.
+	// Defaults to stdout.
+	ErrorLogger *log.Logger
+
 	// Optional function for dialing out
 	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
+}
+
+// ConnWrapper is a wrapper around a net.Conn that provides a way to log read/write bytes
+type ConnWrapper struct {
+	net.Conn
+	ReadBytes  int64
+	WriteBytes int64
+}
+
+// Read reads data from the connection
+func (c *ConnWrapper) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	// c.readBytes += int64(n) is not atomic
+	atomic.AddInt64(&c.ReadBytes, int64(n))
+	return n, err
+}
+
+// Write writes data to the connection
+func (c *ConnWrapper) Write(b []byte) (int, error) {
+	n, err := c.Conn.Write(b)
+	// c.writeBytes += int64(n) is not atomic
+	atomic.AddInt64(&c.WriteBytes, int64(n))
+	return n, err
 }
 
 // Server is reponsible for accepting connections and handling
@@ -120,11 +153,15 @@ func (s *Server) Serve(l net.Listener) error {
 // ServeConn is used to serve a single connection.
 func (s *Server) ServeConn(conn net.Conn) error {
 	defer conn.Close()
+
+	// Wrap the connection to log read/write bytes
+	wrappedConn := &ConnWrapper{Conn: conn}
+
 	remoteAddr, ok := conn.RemoteAddr().(*net.TCPAddr)
 	if !ok {
 		return fmt.Errorf("Invalid remote address type: %T", conn.RemoteAddr())
 	}
-	bufConn := bufio.NewReader(conn)
+	bufConn := bufio.NewReader(wrappedConn)
 
 	// Read the version byte
 	version := []byte{0}
@@ -151,7 +188,7 @@ func (s *Server) ServeConn(conn net.Conn) error {
 	request, err := NewRequest(bufConn)
 	if err != nil {
 		if err == unrecognizedAddrType {
-			if err := sendReply(conn, addrTypeNotSupported, nil); err != nil {
+			if err := sendReply(wrappedConn, addrTypeNotSupported, nil); err != nil {
 				return fmt.Errorf("Failed to send reply: %v", err)
 			}
 		}
@@ -160,8 +197,21 @@ func (s *Server) ServeConn(conn net.Conn) error {
 	request.AuthContext = authContext
 	request.RemoteAddr = &AddrSpec{IP: remoteAddr.IP, Port: remoteAddr.Port}
 
+	// log access
+	// remoteAddr, identity, time_now, request, bytes_in, bytes_out
+	defer func() {
+		s.config.AccessLogger.Printf("%s %s %s %s %d %d",
+			remoteAddr,
+			authContext.Payload["Username"],
+			time.Now().Format(time.RFC3339),
+			request.DestAddr.String(),
+			wrappedConn.ReadBytes,
+			wrappedConn.WriteBytes,
+		)
+	}()
+
 	// Process the client request
-	if err := s.handleRequest(request, conn); err != nil {
+	if err := s.handleRequest(request, wrappedConn); err != nil {
 		err = fmt.Errorf("Failed to handle request: %v", err)
 		s.config.Logger.Printf("[ERR] socks %s: %v", remoteAddr, err)
 		return err
