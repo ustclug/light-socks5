@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -36,7 +37,7 @@ func compressFile(filepath string) error {
 	// Check if the file already exists first
 	if _, err := os.Stat(compressedFilepath); err == nil {
 		return fmt.Errorf("file %s exists", compressedFilepath)
-	} else if !os.IsNotExist(err) {
+	} else if !errors.Is(err, os.ErrNotExist) {
 		// If the error is something other than "file does not exist", return it
 		return err
 	}
@@ -96,7 +97,7 @@ func archiveLogs(logDir string, maxBackup int) error {
 		// check if access-<date>.log.zst exists first
 		if _, err := os.Stat(archiveFilePath + ".zst"); err == nil {
 			return fmt.Errorf("file %s exists", archiveFileName+".zst")
-		} else if !os.IsNotExist(err) {
+		} else if !errors.Is(err, os.ErrNotExist) {
 			// If the error is something other than "file does not exist", return it
 			return err
 		}
@@ -125,7 +126,7 @@ func archiveLogs(logDir string, maxBackup int) error {
 		// If the archiveFile exists, some error occur, and archiveFile need to delete
 		// As the compressFile will remove the original archiveFile
 		// Else, everything is ok, delete the original log files
-		if _, err := os.Stat(archiveFilePath); !os.IsNotExist(err) {
+		if _, err := os.Stat(archiveFilePath); !errors.Is(err, os.ErrNotExist) {
 			if err := os.Remove(archiveFilePath); err != nil {
 				return fmt.Errorf("err when removing file %s", archiveFilePath)
 			}
